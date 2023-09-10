@@ -1,0 +1,867 @@
+//
+// gvsave - Batteryless saving routines for GBA homebrew
+// by Sean Connelly (@velipso), https://sean.cm
+// Project Home: https://github.com/velipso/gvsave
+// SPDX-License-Identifier: 0BSD
+//
+
+.stdlib
+.import './src/config.gvasm' { Save, SAVE_ADDR, SAVE_SIZE }
+.import './src/saveInit.gvasm' { saveInit }
+.import './src/saveCopy.gvasm' { saveCopy }
+
+// GBA header
+.begin header
+  .arm
+  b main
+  .logo
+  .title "GVSAVE"
+  .str "CUNE77"
+  .i16 150, 0, 0, 0, 0
+  .i8 0 // version
+  .crc
+  .i16 0
+  b header // ensure ROM isn't interpetted as multi-boot
+  .str "SRAM_Vnnn"
+  .align 4
+.end
+
+.struct G = 0x03001000
+  .i32 entropy
+  .i32 input
+  .i32 hit
+  .i32 menu
+  .i32 checksum
+  .i32 status
+  .i32 blink
+.end
+
+.begin INP
+  .def MASK_D = 0x080
+  .def MASK_U = 0x040
+  .def MASK_L = 0x020
+  .def MASK_R = 0x010
+  .def MASK_S = 0x008
+  .def MASK_E = 0x004
+  .def MASK_B = 0x002
+  .def MASK_A = 0x001
+.end
+
+.pool
+.align 4
+.begin iwramStart
+  .def base = 0x03002000
+  .base base
+  .arm
+  .include './src/saveInit.gvasm'
+  .include './src/saveCopy.gvasm'
+  .pool
+  .align 4
+.end
+iwramEnd:
+
+// main program
+.align 4
+.begin main
+  .arm
+  add   ip, pc, #1
+  bx    ip
+  .thumb
+
+  // disable lcd
+  ldr   r0, =REG_DISPCNT
+  ldr   r1, =0b0000_0000_1000_0000
+  strh  r1, [r0]
+
+  // set cartridge wait state for faster access
+  ldr   r0, =REG_WAITCNT
+  ldr   r1, =0x4317
+  strh  r1, [r0]
+
+  // zero memory
+  ldr   r0, =0x02000000
+  movs  r1, #0
+  ldr   r2, =256 * 1024
+  bl    memset32
+  ldr   r0, =0x03000000
+  movs  r1, #0
+  ldr   r2, =32 * 1024
+  bl    memset32
+
+  // copy over IWRAM functions
+  ldr   r0, =iwramStart.base
+  ldr   r1, =iwramStart
+  ldr   r2, =iwramEnd - iwramStart
+  bl    memcpy32
+
+  // set IRQ handler
+  ldr   r0, =0x03007ffc
+  ldr   r1, =irqNone
+  str   r1, [r0]
+
+  // clear IE
+  ldr   r0, =REG_IE
+  movs  r1, #0
+  strh  r1, [r0]
+
+  // clear IF
+  ldr   r0, =REG_IF
+  ldr   r1, =0x3fff
+  strh  r1, [r0]
+
+  // enable vblank
+  ldr   r0, =REG_DISPSTAT
+  movs  r1, #8
+  strh  r1, [r0]
+  ldr   r0, =REG_IE
+  ldrh  r1, [r0]
+  movs  r2, #1
+  orrs  r1, r2
+  strh  r1, [r0]
+
+  // initialize save
+  ldr   r0, =saveInit+1
+  bl    bx_r0
+
+  // initialize sound
+  ldr   r0, =REG_SOUNDCNT_X
+  movs  r1, #0x80
+  strb  r1, [r0]
+  ldr   r0, =REG_SOUNDCNT_L
+  ldr   r1, =(1 << 12) | (1 << 8) | (7 << 4) | 7
+  strh  r1, [r0]
+  ldr   r0, =REG_SOUNDCNT_H
+  movs  r1, #2
+  strh  r1, [r0]
+  ldr   r0, =REG_SOUND1CNT_L
+  movs  r1, #8
+  strh  r1, [r0]
+  ldr   r0, =REG_SOUND1CNT_H
+  ldr   r1, =(15 << 12) | (0 << 11) | (1 << 8) | 0x0080
+  strh  r1, [r0]
+  ldr   r0, =REG_SOUND1CNT_X
+  ldr   r1, =0
+  strh  r1, [r0]
+
+  // enable interrupts
+  ldr   r0, =REG_IME
+  movs  r1, #1
+  strb  r1, [r0]
+
+  // initialize entropy
+  ldr   r0, =G.entropy
+  movs  r1, #123
+  strx  r1, [r0] (G.entropy)
+
+  // setup bg0
+  ldr   r0, =REG_BG0CNT
+  ldr   r1, =0xc883
+  strh  r1, [r0]
+
+  // set palette
+  ldr   r0, =0x05000000
+  movs  r1, #0
+  strh  r1, [r0]
+  adds  r0, #2
+  strh  r1, [r0]
+  adds  r0, #2
+  ldr   r1, =rgb(31, 31, 31)
+  strh  r1, [r0]
+  adds  r0, #2
+  ldr   r1, =rgb(4, 20, 10)
+  strh  r1, [r0]
+
+  // copy over tiles
+  ldr   r0, =0x06000000
+  ldr   r1, =tileData
+  ldr   r2, =32 * 3 * 8 * 8 * 2
+  bl    memcpy32
+
+  // print strings
+  .def STR_X  = 2
+  .def STR_X2 = 20
+  .def STR_Y  = 1
+  .begin printStrings
+    movs  r0, #STR_X
+    movs  r1, #STR_Y + 0
+    ldr   r2, =typeStr
+    movs  r3, #96
+    bl    printString
+    movs  r0, #STR_X
+    movs  r1, #STR_Y + 2
+    ldr   r2, =failCodeStr
+    movs  r3, #96
+    bl    printString
+    movs  r0, #STR_X
+    movs  r1, #STR_Y + 4
+    ldr   r2, =cartIdStr
+    movs  r3, #96
+    bl    printString
+    movs  r0, #STR_X
+    movs  r1, #STR_Y + 6
+    ldr   r2, =sector1AddrStr
+    movs  r3, #96
+    bl    printString
+    movs  r0, #STR_X
+    movs  r1, #STR_Y + 7
+    ldr   r2, =sector1SizeStr
+    movs  r3, #96
+    bl    printString
+    movs  r0, #STR_X
+    movs  r1, #STR_Y + 9
+    ldr   r2, =sector2AddrStr
+    movs  r3, #96
+    bl    printString
+    movs  r0, #STR_X
+    movs  r1, #STR_Y + 10
+    ldr   r2, =sector2SizeStr
+    movs  r3, #96
+    bl    printString
+    movs  r0, #0
+    movs  r1, #STR_Y + 11
+    ldr   r2, =lineStr
+    movs  r3, #96
+    bl    printString
+    movs  r0, #STR_X
+    movs  r1, #STR_Y + 12
+    ldr   r2, =actionStr
+    movs  r3, #96
+    bl    printString
+    movs  r0, #STR_X2
+    movs  r1, #STR_Y + 12
+    ldr   r2, =arrowStr
+    movs  r3, #0
+    bl    printString
+    movs  r0, #STR_X
+    movs  r1, #STR_Y + 14
+    ldr   r2, =resultStr
+    movs  r3, #96
+    bl    printString
+    movs  r0, #0
+    movs  r1, #STR_Y + 16
+    ldr   r2, =lineStr
+    movs  r3, #96
+    bl    printString
+    movs  r0, #STR_X
+    movs  r1, #STR_Y + 17
+    ldr   r2, =githubStr
+    movs  r3, #96
+    bl    printString
+  .end
+
+  .begin printValues
+    movs  r0, #STR_X2
+    movs  r1, #STR_Y + 0
+    ldr   r2, =Save.type
+    ldrx  r2, [r2] (Save.type)
+    movs  r3, #0
+    bl    printInt8
+    movs  r0, #STR_X2 + 6
+    movs  r1, #STR_Y + 0
+    ldr   r2, =Save.swapBits
+    ldrx  r2, [r2] (Save.swapBits)
+    movs  r3, #0
+    bl    printInt8
+    movs  r0, #STR_X2 + 3
+    movs  r1, #STR_Y + 0
+    ldr   r2, =Save.resetType
+    ldrx  r2, [r2] (Save.resetType)
+    movs  r3, #0
+    bl    printInt8
+    movs  r0, #STR_X2
+    movs  r1, #STR_Y + 2
+    ldr   r2, =Save.failCode
+    ldrx  r2, [r2] (Save.failCode)
+    movs  r3, #0
+    bl    printInt8
+    movs  r0, #STR_X2
+    movs  r1, #STR_Y + 4
+    ldr   r2, =Save.cartId
+    ldrx  r2, [r2] (Save.cartId)
+    movs  r3, #0
+    bl    printInt32
+    movs  r0, #STR_X2
+    movs  r1, #STR_Y + 6
+    ldr   r2, =Save.sector1Addr
+    ldrx  r2, [r2] (Save.sector1Addr)
+    movs  r3, #0
+    bl    printInt32
+    movs  r0, #STR_X2
+    movs  r1, #STR_Y + 7
+    ldr   r2, =Save.sector1Size
+    ldrx  r2, [r2] (Save.sector1Size)
+    movs  r3, #0
+    bl    printInt32
+    movs  r0, #STR_X2
+    movs  r1, #STR_Y + 9
+    ldr   r2, =Save.sector2Addr
+    ldrx  r2, [r2] (Save.sector2Addr)
+    movs  r3, #0
+    bl    printInt32
+    movs  r0, #STR_X2
+    movs  r1, #STR_Y + 10
+    ldr   r2, =Save.sector2Size
+    ldrx  r2, [r2] (Save.sector2Size)
+    movs  r3, #0
+    bl    printInt32
+  .end
+
+  // enable bg0
+  ldr   r0, =REG_DISPCNT
+  ldr   r1, =0x0100
+  strh  r1, [r0]
+
+  .begin nextFrame
+    swi   5
+
+    // process input and update entropy
+    ldr   r0, =REG_KEYINPUT
+    ldrh  r0, [r0]
+    ldr   r1, =0x400
+    subs  r1, #1
+    eors  r0, r1
+    ldr   r1, =G.input
+    ldrx  r2, [r1] (G.input)
+    eors  r2, r0
+    ands  r2, r0
+    strx  r0, [r1] (G.input)
+    ldr   r1, =G.hit
+    strx  r2, [r1] (G.hit)
+    ldr   r1, =G.entropy
+    ldr   r1, [r1]
+    bl    whisky2
+    ldr   r1, =G.entropy
+    str   r0, [r1]
+
+    // render menu
+    ldr   r0, =G.blink
+    ldrx  r3, [r0] (G.blink)
+    adds  r3, #1
+    strx  r3, [r0] (G.blink)
+    lsls  r3, #26
+    lsrs  r3, #31
+    cmp   r3, #0
+    beq   +
+    movs  r3, #96
++   movs  r0, #STR_X2 + 2
+    movs  r1, #STR_Y + 12
+    ldr   r2, =G.menu
+    ldrx  r2, [r2] (G.menu)
+    cmp   r2, #0
+    beq   +
+    ldr   r2, =loadStr
+    b     ++
++   ldr   r2, =saveStr
+++  bl    printString
+
+    // render status
+    movs  r0, #STR_X2
+    movs  r1, #STR_Y + 14
+    ldr   r2, =G.status
+    ldrx  r2, [r2] (G.status)
+    cmp   r2, #0
+    beq   statusEmpty
+    cmp   r2, #1
+    beq   statusSaved
+    cmp   r2, #2
+    beq   statusVerified
+    cmp   r2, #3
+    beq   statusBadSave
+statusEmpty:
+    ldr   r2, =emptyStr
+    b     +
+statusSaved:
+    ldr   r2, =savedStr
+    b     +
+statusVerified:
+    ldr   r2, =verifiedStr
+    b     +
+statusBadSave:
+    ldr   r2, =badSaveStr
++   movs  r3, #0
+    bl    printString
+
+    // render checksum
+    movs  r0, #STR_X2
+    movs  r1, #STR_Y + 15
+    ldr   r2, =G.checksum
+    ldrx  r2, [r2] (G.checksum)
+    movs  r3, #0
+    bl    printInt32
+
+    // handle input
+    ldr   r0, =G.hit
+    ldrx  r0, [r0] (G.hit)
+    movs  r1, #INP.MASK_L
+    tst   r0, r1
+    bne   hitLeft
+    movs  r1, #INP.MASK_R
+    tst   r0, r1
+    bne   hitRight
+    movs  r1, #INP.MASK_A
+    tst   r0, r1
+    bne   hitA
+    b     nextFrame
+
+hitLeft:
+    ldr   r0, =G.menu
+    ldrx  r1, [r0] (G.menu)
+    cmp   r1, #0
+    beq   +
+    movs  r1, #0
+    strx  r1, [r0] (G.menu)
+    ldr   r0, =REG_SOUND1CNT_X
+    ldr   r1, =0x8700
+    strh  r1, [r0]
++   b     nextFrame
+
+hitRight:
+    ldr   r0, =G.menu
+    ldrx  r1, [r0] (G.menu)
+    cmp   r1, #1
+    beq   +
+    movs  r1, #1
+    strx  r1, [r0] (G.menu)
+    ldr   r0, =REG_SOUND1CNT_X
+    ldr   r1, =0x8700
+    strh  r1, [r0]
++   b     nextFrame
+
+hitA:
+    ldr   r0, =REG_SOUND1CNT_X
+    ldr   r1, =0x8740
+    strh  r1, [r0]
+    ldr   r0, =G.menu
+    ldrx  r0, [r0] (G.menu)
+    cmp   r0, #0
+    beq   +
+    bl    performLoad
+    b     nextFrame
++   bl    performSave
+    b     nextFrame
+
+  .end
+  .pool
+.end
+
+.begin bx_r0
+  .thumb
+  bx    r0
+.end
+
+.begin performSave
+  .thumb
+  push  {r4-r7, lr}
+
+  .regs r0-r3, entropy, write, left, r7, r8-r11
+
+  ldr   entropy, =G.entropy
+  ldrx  entropy, [entropy] (G.entropy)
+
+  ldr   r0, =G.checksum
+  strx  entropy, [r0] (G.checksum)
+
+  .begin fillSave
+    ldr   write, =SAVE_ADDR
+    str   entropy, [write]
+    adds  write, #4
+    ldr   left, =SAVE_SIZE - 4
+nextWrite:
+    cmp   left, #0
+    ble   break
+    movs  r0, entropy
+    movs  r1, left
+    bl    whisky2
+    str   r0, [write]
+    adds  write, #4
+    subs  left, #4
+    b     nextWrite
+break:
+  .end
+
+  .regs r0-r11
+
+  // copy save from EWRAM to storage
+  ldr   r0, =saveCopy.toStorage+1
+  bl    bx_r0
+
+  // update status text
+  ldr   r0, =G.status
+  movs  r1, #1
+  strx  r1, [r0] (G.status)
+
+  .regs r0-r11
+  pop   {r4-r7}
+  pop   {r0}
+  bx    r0
+  .pool
+.end
+
+.begin performLoad
+  .thumb
+  push  {r4-r7, lr}
+
+  .begin wipeEWRAM
+    ldr   r0, =SAVE_ADDR
+    ldr   r1, =SAVE_ADDR + SAVE_SIZE
+    movs  r2, #0
+nextWrite:
+    strh  r2, [r0]
+    adds  r0, #2
+    cmp   r0, r1
+    blt   nextWrite
+  .end
+
+  // copy save from storage to EWRAM
+  ldr   r0, =saveCopy.fromStorage+1
+  bl    bx_r0
+
+  .regs r0-r3, entropy, read, left, r7, r8-r11
+
+  .begin compareSave
+    ldr   read, =SAVE_ADDR
+    ldr   entropy, [read]
+    ldr   r0, =G.checksum
+    strx  entropy, [r0] (G.checksum)
+    adds  read, #4
+    ldr   left, =SAVE_SIZE - 4
+nextRead:
+    cmp   left, #0
+    ble   breakSuccess
+    movs  r0, entropy
+    movs  r1, left
+    bl    whisky2
+    ldr   r1, [read]
+    cmp   r0, r1
+    bne   checkFailure
+    adds  read, #4
+    subs  left, #4
+    b     nextRead
+checkFailure:
+    cmp   left, #4
+    bne   breakFailure
+    // the last half-word is intentionally corrupted
+    ldr   r2, =0xffff
+    ands  r0, r2
+    ands  r1, r2
+    cmp   r0, r1
+    bne   breakFailure
+breakSuccess:
+    ldr   r0, =G.status
+    movs  r1, #2
+    strx  r1, [r0] (G.status)
+    b     return
+breakFailure:
+    ldr   r0, =G.status
+    movs  r1, #3
+    strx  r1, [r0] (G.status)
+    b     return
+  .end
+
+return:
+  .regs r0-r11
+  pop   {r4-r7}
+  pop   {r0}
+  bx    r0
+  .pool
+.end
+
+.begin printByte //(output, byte)
+  .thumb
+  lsls  r2, r1, #24
+  lsrs  r2, #28
+  cmp   r2, #10
+  blt   +
+  adds  r2, #55
+  b     ++
++ adds  r2, #48
+++
+  strb  r2, [r0]
+  adds  r0, #1
+  lsls  r2, r1, #28
+  lsrs  r2, #28
+  cmp   r2, #10
+  blt   +
+  adds  r2, #55
+  b     ++
++ adds  r2, #48
+++
+  strb  r2, [r0]
+  bx    lr
+.end
+
+.begin printString //(x, y, ptr, color)
+  .thumb
+  lsls  r0, #1
+  lsls  r1, #6
+  adds  r0, r1
+  movs  r1, r3
+  ldr   r3, =0x06004000
+  adds  r3, r0
+nextChar:
+  ldrb  r0, [r2]
+  cmp   r0, #0
+  beq   return
+  subs  r0, #32
+  adds  r0, r1
+  strh  r0, [r3]
+  adds  r2, #1
+  adds  r3, #2
+  b     nextChar
+return:
+  bx    lr
+  .pool
+.end
+
+.begin printInt8 //(x, y, num, color)
+  .thumb
+  lsls  r0, #1
+  lsls  r1, #6
+  adds  r0, r1
+  movs  r1, r3
+  ldr   r3, =0x06004000
+  adds  r3, r0
+
+  // nibble 1
+  movs  r0, r2
+  lsls  r0, #24
+  lsrs  r0, #28
+  cmp   r0, #10
+  blt   +
+  adds  r0, #65 - 32 - 10
+  b     ++
++ adds  r0, #48 - 32
+++
+  adds  r0, r1
+  strh  r0, [r3]
+  adds  r3, #2
+
+  // nibble 2
+  movs  r0, r2
+  lsls  r0, #28
+  lsrs  r0, #28
+  cmp   r0, #10
+  blt   +
+  adds  r0, #65 - 32 - 10
+  b     ++
++ adds  r0, #48 - 32
+++
+  adds  r0, r1
+  strh  r0, [r3]
+
+  bx    lr
+  .pool
+.end
+
+.begin printInt32 //(x, y, num, color)
+  .thumb
+  push  {lr}
+  push  {r0-r3}
+  push  {r0-r3}
+  push  {r0-r3}
+
+  lsrs  r2, #24
+  bl    printInt8
+  pop   {r0-r3}
+  adds  r0, #2
+  lsrs  r2, #16
+  bl    printInt8
+  pop   {r0-r3}
+  adds  r0, #4
+  lsrs  r2, #8
+  bl    printInt8
+  pop   {r0-r3}
+  adds  r0, #6
+  bl    printInt8
+
+  pop   {r0}
+  bx    r0
+  .pool
+.end
+
+typeStr:
+.str "Type/Reset/Swap:\0"
+failCodeStr:
+.str "Fail Code:\0"
+cartIdStr:
+.str "Cart ID:\0"
+sector1AddrStr:
+.str "Sector 1 Addr:\0"
+sector1SizeStr:
+.str "         Size:\0"
+sector2AddrStr:
+.str "Sector 2 Addr:\0"
+sector2SizeStr:
+.str "         Size:\0"
+lineStr:
+.i8fill 240 / 8, 127
+.i8 0
+actionStr:
+.str "Action:\0"
+arrowStr:
+.str "<      >\0"
+saveStr:
+.str "Save\0"
+loadStr:
+.str "Load\0"
+resultStr:
+.str "Result:\0"
+emptyStr:
+.str "N/A      \0"
+savedStr:
+.str "Saved!   \0"
+verifiedStr:
+.str "Verified!\0"
+badSaveStr:
+.str "Bad save \0"
+githubStr:
+.str "github.com/velipso/gvsave\0"
+
+.align 4
+tileData:
+.script
+  var img = image.load embed './font.png'
+  var d1 = {}
+  var d2 = {}
+  for var ty: range 3
+    for var tx: range 32
+      for var y: range 8
+        for var x: range 8
+          var c = image.rgb img, tx * 8 + x, ty * 8 + y
+          list.push d1, pick c == 0, 0, 2
+          list.push d2, pick c == 0, 0, 3
+        end
+      end
+    end
+  end
+  u8 d1
+  u8 d2
+.end
+.align 4
+
+.begin whisky2 //(input, entropy)
+  .thumb
+  .align 4, nop
+  bx    pc
+  nop
+  .arm
+  ldr   r3, =1833778363
+  mul   r1, r3, r1
+  ldr   r3, =337170863
+  eor   r1, r1, r0
+  mul   r0, r3, r1
+  ldr   r3, =620363059
+  eor   r0, r0, r1, lsr #13
+  eor   r0, r0, r1
+  mul   r3, r0, r3
+  ldr   r2, =232140641
+  eor   r0, r3, r0, lsr #10
+  mul   r2, r0, r2
+  eor   r0, r2, r0, lsr #21
+  bx    lr
+  .pool
+.end
+
+.begin irqNone
+  .arm
+  // r0 is already set to 0x04000000 from BIOS
+  ldr   ip, [r0, #0x200]!
+  and   r2, ip, ip, lsr #16
+  strh  r2, [r0, #2]
+  ldr   r3, [r0, #-0x208]
+  orr   r3, r3, r2
+  str   r3, [r0, #-0x208]
+  bx    lr
+  .pool
+.end
+
+.begin memcpy32 //(dest, source, byte count)
+  .thumb
+  .align 4, nop
+  bx    pc // change to ARM mode
+  nop
+arm:
+  .arm
+  subs  r2, #32
+  blt   last32
+  stmfd sp!, {r3-r10}
+chunk:
+  ldmia r1!, {r3-r10}
+  stmia r0!, {r3-r10}
+  subs  r2, #32
+  blt   done32
+  ldmia r1!, {r3-r10}
+  stmia r0!, {r3-r10}
+  subs  r2, #32
+  blt   done32
+  ldmia r1!, {r3-r10}
+  stmia r0!, {r3-r10}
+  subs  r2, #32
+  blt   done32
+  ldmia r1!, {r3-r10}
+  stmia r0!, {r3-r10}
+  subs  r2, #32
+  bge   chunk
+done32:
+  ldmfd sp!, {r3-r10}
+last32:
+  adds  r2, #32
+  bxle  lr
+last4:
+  subs  r2, #4
+  ldrge r12, [r1], #4
+  strge r12, [r0], #4
+  bgt   last4
+  bxeq  lr
+  add   r2, #4
+bytecopy:
+  ldrb  r12, [r1], #1
+  ldrb  r12, [r0], #1
+  subs  r2, #1
+  bgt   bytecopy
+  bx    lr
+  .pool
+.end
+
+.begin memset32 //(dest, data, byte count)
+  .thumb
+  .align 4, nop
+  bx    pc // change to ARM mode
+  nop
+arm:
+  .arm
+  subs  r2, #32
+  blt   last32
+  stmfd sp!, {r3-r9}
+  mov   r3, r1
+  mov   r4, r1
+  mov   r5, r1
+  mov   r6, r1
+  mov   r7, r1
+  mov   r8, r1
+  mov   r9, r1
+chunk:
+  stmia r0!, {r1, r3-r9}
+  subs  r2, #32
+  blt   done32
+  stmia r0!, {r1, r3-r9}
+  subs  r2, #32
+  blt   done32
+  stmia r0!, {r1, r3-r9}
+  subs  r2, #32
+  blt   done32
+  stmia r0!, {r1, r3-r9}
+  subs  r2, #32
+  bge   chunk
+done32:
+  ldmfd sp!, {r3-r9}
+last32:
+  adds  r2, #32
+  bxle  lr
+last4:
+  str   r1, [r0], #4
+  subs  r2, #4
+  bgt   last4
+  bx    lr
+.end
+.align 0x8000

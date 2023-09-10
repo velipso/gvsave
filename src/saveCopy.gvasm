@@ -1,0 +1,559 @@
+//
+// gvsave - Batteryless saving routines for GBA homebrew
+// by Sean Connelly (@velipso), https://sean.cm
+// Project Home: https://github.com/velipso/gvsave
+// SPDX-License-Identifier: 0BSD
+//
+
+.stdlib
+.import './config.gvasm' { SAVE_ADDR, SAVE_SIZE, Save }
+
+.begin saveCopy
+  .begin toStorage //() => fail?
+    .thumb
+    push  {r4, lr}
+
+    // disable interrupts
+    ldr   r0, =REG_IME
+    ldrb  r4, [r0]
+    movs  r1, #0
+    strb  r1, [r0]
+
+    // check for SRAM
+    ldr   r0, =Save.type
+    ldrx  r0, [r0] (Save.type)
+    cmp   r0, #0
+    bne   +
+    // return the status from __toStorage_sram
+    bl    __toStorage_sram
+    b     return
++
+    // dealing with flash, so check which sector we're writing to
+    bl    __sectorPriority
+
+    // stomp last halfword with next write token
+    ldr   r2, =SAVE_ADDR + SAVE_SIZE - 2
+    strh  r1, [r2]
+
+    // if sector1 is current, write to sector2 (and vice versa)
+    cmp   r0, #1
+    beq   setupSector2
+    cmp   r0, #2
+    beq   setupSector1
+    b     flashCorrupt
+
+setupSector1:
+    ldr   r1, =Save.sector1Addr
+    ldr   r2, =Save.sector1Size
+    b     +
+setupSector2:
+    ldr   r1, =Save.sector2Addr
+    ldr   r2, =Save.sector2Size
+    // fall through
++   ldr   r0, =Save.type
+    ldrx  r0, [r0] (Save.type)
+    ldrx  r1, [r1] (Save.sector1Addr) // or possibly sector2Addr
+    ldrx  r2, [r2] (Save.sector1Size) // or possibly sector2Size
+    // return the status from __toStorage_flash
+    bl    __toStorage_flash
+    b     return
+
+flashCorrupt:
+    // this can happen for the very first save... so let's try saving
+    // to each sector
++   ldr   r0, =Save.type
+    ldrx  r0, [r0] (Save.type)
+    ldr   r1, =Save.sector1Addr
+    ldrx  r1, [r1] (Save.sector1Addr)
+    ldr   r2, =Save.sector1Size
+    ldrx  r2, [r2] (Save.sector1Size)
+    // return the status from __toStorage_flash on failure
+    bl    __toStorage_flash
+    cmp   r0, #0
+    bne   return
+    // stomp last halfword with **next** write token
+    ldr   r2, =SAVE_ADDR + SAVE_SIZE - 2
+    movs  r1, #0xaa
+    strh  r1, [r2]
+    ldr   r0, =Save.type
+    ldrx  r0, [r0] (Save.type)
+    ldr   r1, =Save.sector2Addr
+    ldrx  r1, [r1] (Save.sector2Addr)
+    ldr   r2, =Save.sector2Size
+    ldrx  r2, [r2] (Save.sector2Size)
+    // return the status from __toStorage_flash
+    bl    __toStorage_flash
+    b     return
+
+return:
+    // restore IME
+    ldr   r1, =REG_IME
+    strb  r4, [r1]
+    pop   {r4}
+    pop   {r1}
+    bx    r1
+    .pool
+  .end
+
+  .begin __toStorage_sram // () => fail?
+    .thumb
+    // intentionally corrupt the last halfword for consistency with
+    // the flash saves
+    ldr   r0, =SAVE_ADDR + SAVE_SIZE - 2
+    movs  r1, #0xaa
+    strh  r1, [r0]
+    ldr   r0, =0x0e000000
+    ldr   r1, =SAVE_ADDR
+    ldr   r2, =SAVE_SIZE
+-   ldrb  r3, [r1, #0]
+    strb  r3, [r0, #0]
+    ldrb  r3, [r1, #1]
+    strb  r3, [r0, #1]
+    ldrb  r3, [r1, #2]
+    strb  r3, [r0, #2]
+    ldrb  r3, [r1, #3]
+    strb  r3, [r0, #3]
+    adds  r0, #4
+    adds  r1, #4
+    subs  r2, #4
+    bne   -
+    movs  r0, #0
+    bx    lr
+    .pool
+  .end
+
+  .begin __toStorage_flash //(saveType, sectorAddr, sectorSize) => fail?
+    .def addr(a) = 0x08000000 | (a & 0xfffffffe)
+    .struct S
+      .i32 saveType
+      .i32 writeLeft
+    .end
+    .thumb
+    push  {r4-r7, lr}
+    .if S._bytes > 0
+      sub   sp, #S._bytes
+    .end
+
+    str   r0, [sp, #S.saveType]
+    movs  r4, r1
+    movs  r5, r2
+
+    .regs r0-r3, sectorAddr, sectorSize, readAddr, i, r8-r11
+
+    ldr   readAddr, =SAVE_ADDR
+    ldr   r0, =SAVE_SIZE
+
+nextSector:
+    str   r0, [sp, #S.writeLeft]
+
+    ldr   r0, [sp, #S.saveType]
+    cmp   r0, #1
+    bne   +
+    b     write_s29
++   cmp   r0, #2
+    bne   +
+    b     write_m58
++
+    // more save types here...
+    b     continue
+
+//
+// TYPE 1 - S29
+//
+
+    .begin write_s29
+      // reset
+      movs  r0, sectorAddr
+      movs  r1, #0xf0
+      bl    __write
+
+      // erase sectorAddr
+      ldr   r0, =addr(0xaaa)
+      movs  r1, #0xaa
+      bl    __write
+      ldr   r0, =addr(0x555)
+      movs  r1, #0x55
+      bl    __write
+      ldr   r0, =addr(0xaaa)
+      movs  r1, #0x80
+      bl    __write
+      ldr   r0, =addr(0xaaa)
+      movs  r1, #0xaa
+      bl    __write
+      ldr   r0, =addr(0x555)
+      movs  r1, #0x55
+      bl    __write
+      movs  r0, sectorAddr
+      movs  r1, #0x30
+      bl    __write
+
+      // wait for the erase to finish
+      movs  r0, sectorAddr
+      ldr   r1, =0xffff
+      ldr   r2, =0x500000 // TODO: ???
+      bl    __waitForValue
+      cmp   r0, #0
+      beq   +
+      b     returnFail1
++
+      // reset
+      movs  r0, sectorAddr
+      movs  r1, #0xf0
+      bl    __write
+
+      // loop for each half word
+      movs  i, #0
+nextHalfword_s29:
+      // program a half word
+      ldr   r0, =addr(0xaaa)
+      movs  r1, #0xaa
+      bl    __write
+      ldr   r0, =addr(0x555)
+      movs  r1, #0x55
+      bl    __write
+      ldr   r0, =addr(0xaaa)
+      movs  r1, #0xa0
+      bl    __write
+
+      // write the half word
+      ldrh  r1, [readAddr, i]
+      strh  r1, [sectorAddr, i]
+
+      // wait for the write to finish
+      adds  r0, sectorAddr, i
+      ldr   r2, =0x500000 // TODO: ???
+      bl    __waitForValue
+      cmp   r0, #0
+      beq   +
+      b     returnFail2
++
+      adds  i, #2
+      cmp   i, sectorSize
+      blt   nextHalfword_s29
+
+      // reset
+      movs  r0, sectorAddr
+      movs  r1, #0xf0
+      bl    __write
+
+      adds  sectorAddr, sectorSize
+      adds  readAddr, sectorSize
+    .end
+
+    b     continue
+
+//
+// TYPE 2 - M58
+//
+
+    .begin write_m58
+      // reset
+      movs  r0, sectorAddr
+      movs  r1, #0xff
+      bl    __write
+
+      // erase sectorAddr
+      movs  r0, sectorAddr
+      movs  r1, #0x60
+      bl    __write
+      movs  r0, sectorAddr
+      movs  r1, #0xd0
+      bl    __write
+      movs  r0, sectorAddr
+      movs  r1, #0x20
+      bl    __write
+      movs  r0, sectorAddr
+      movs  r1, #0xd0
+      bl    __write
+
+      // wait for the erase to finish
+      movs  r0, sectorAddr
+      movs  r1, #0x80
+      ldr   r2, =0x500000 // TODO: ???
+      bl    __waitForValue
+      cmp   r0, #0
+      beq   +
+      b     returnFail3
++
+      // reset
+      movs  r0, sectorAddr
+      movs  r1, #0xff
+      bl    __write
+
+      // loop for each half word
+      movs  i, #0
+nextHalfword_m58:
+      // program setup
+      adds  r0, sectorAddr, i
+      movs  r1, #0x40
+      bl    __write
+
+      // write the half word
+      ldrh  r1, [readAddr, i]
+      strh  r1, [sectorAddr, i]
+
+      // wait for the write to finish
+      movs  r0, sectorAddr
+      movs  r1, #0x80
+      ldr   r2, =0x500000 // TODO: ???
+      bl    __waitForValue
+      cmp   r0, #0
+      beq   +
+      b     returnFail4
++
+      adds  i, #2
+      cmp   i, sectorSize
+      blt   nextHalfword_m58
+
+      // reset
+      movs  r0, sectorAddr
+      movs  r1, #0xff
+      bl    __write
+
+      adds  sectorAddr, sectorSize
+      adds  readAddr, sectorSize
+    .end
+
+    b     continue
+
+    // more save types here...
+
+continue:
+    ldr   r0, [sp, #S.writeLeft]
+    subs  r0, sectorSize // top of loop will save writeLeft
+    ble   +
+    b     nextSector
++   movs  r0, #0
+    b     return
+
+returnFail1:
+    movs  r0, #1
+    b     returnFailX
+returnFail2:
+    movs  r0, #2
+    b     returnFailX
+returnFail3:
+    movs  r0, #3
+    b     returnFailX
+returnFail4:
+    movs  r0, #4
+    b     returnFailX
+returnFailX:
+    ldr   r1, =Save.failCode
+    str   r0, [r1]
+return:
+    .regs r0-r11
+    .if S._bytes > 0
+      add   sp, #S._bytes
+    .end
+    pop   {r4-r7}
+    pop   {r1}
+    bx    r1
+    .pool
+  .end
+
+  // priority  => 0 (corrupt), 1 (sector1), 2 (sector2)
+  // nextWrite => what to write next to flip priority (0xa5, 0xa6, ..)
+  .begin __sectorPriority //() => (priority, nextWrite)
+    .thumb
+    // see which sector has priority
+    // read last 16 bits of each sector
+    ldr   r2, =SAVE_SIZE - 2
+    ldr   r0, =Save.sector1Addr
+    ldr   r0, [r0]
+    ldrh  r0, [r0, r2]
+    ldr   r1, =Save.sector2Addr
+    ldr   r1, [r1]
+    ldrh  r1, [r1, r2]
+
+    //                       S1
+    //          | 0xa5 | 0xa6 | 0xa9 | 0xaa |
+    //     -----+------+------+------+------+
+    //     0xa5 |  --  |  S2  |  --  |  S1  |
+    // S2  0xa6 |  S1  |  --  |  S2  |  --  |
+    //     0xa9 |  --  |  S1  |  --  |  S2  |
+    //     0xaa |  S2  |  --  |  S1  |  --  |
+
+    cmp   r0, #0xa5
+    beq   s1_a5
+    cmp   r0, #0xa6
+    beq   s1_a6
+    cmp   r0, #0xa9
+    beq   s1_a9
+    cmp   r0, #0xaa
+    beq   s1_aa
+    b     flashCorrupt
+s1_a5:
+    cmp   r1, #0xa6
+    beq   sector1_aa
+    cmp   r1, #0xaa
+    beq   sector2_a9
+    b     flashCorrupt
+s1_a6:
+    cmp   r1, #0xa5
+    beq   sector2_aa
+    cmp   r1, #0xa9
+    beq   sector1_a5
+    b     flashCorrupt
+s1_a9:
+    cmp   r1, #0xa6
+    beq   sector2_a5
+    cmp   r1, #0xaa
+    beq   sector1_a6
+    b     flashCorrupt
+s1_aa:
+    cmp   r1, #0xa5
+    beq   sector1_a9
+    cmp   r1, #0xa9
+    beq   sector2_a6
+    // fall through
+flashCorrupt:
+    // NOTE: the value of 0xaa is hardcoded above when flash is
+    // corrupt, so that both sectors are written to (and hopefully
+    // making it not corrupt)
+    movs  r0, #0
+    movs  r1, #0xa5
+    bx    lr
+sector1_a5:
+    movs  r0, #1
+    movs  r1, #0xa5
+    bx    lr
+sector1_a6:
+    movs  r0, #1
+    movs  r1, #0xa6
+    bx    lr
+sector1_a9:
+    movs  r0, #1
+    movs  r1, #0xa9
+    bx    lr
+sector1_aa:
+    movs  r0, #1
+    movs  r1, #0xaa
+    bx    lr
+sector2_a5:
+    movs  r0, #2
+    movs  r1, #0xa5
+    bx    lr
+sector2_a6:
+    movs  r0, #2
+    movs  r1, #0xa6
+    bx    lr
+sector2_a9:
+    movs  r0, #2
+    movs  r1, #0xa9
+    bx    lr
+sector2_aa:
+    movs  r0, #2
+    movs  r1, #0xaa
+    bx    lr
+    .pool
+  .end
+
+  .begin fromStorage //()
+    .thumb
+    push  {lr}
+    ldr   r0, =Save.type
+    ldrh  r0, [r0]
+    cmp   r0, #0
+    beq   sram
+    // otherwise, flash
+
+    bl    __sectorPriority
+    cmp   r0, #1
+    beq   sector1
+    cmp   r0, #2
+    beq   sector2
+    b     flashCorrupt
+
+sector1:
+    ldr   r1, =Save.sector1Addr
+    b     +
+sector2:
+    ldr   r1, =Save.sector2Addr
++   ldr   r0, =SAVE_ADDR
+    ldr   r1, [r1]
+    ldr   r2, =SAVE_SIZE
+-   ldr   r3, [r1]
+    str   r3, [r0]
+    adds  r0, #4
+    adds  r1, #4
+    subs  r2, #4
+    bne   -
+    b     return
+
+flashCorrupt:
+    ldr   r0, =SAVE_ADDR
+    ldr   r1, =SAVE_SIZE
+    ldr   r2, =0
+-   str   r2, [r0]
+    adds  r0, #4
+    subs  r1, #4
+    bne   -
+    b     return
+
+sram:
+    ldr   r0, =SAVE_ADDR
+    ldr   r1, =0x0e000000
+    ldr   r2, =SAVE_SIZE
+-   ldrb  r3, [r1, #0]
+    strb  r3, [r0, #0]
+    ldrb  r3, [r1, #1]
+    strb  r3, [r0, #1]
+    ldrb  r3, [r1, #2]
+    strb  r3, [r0, #2]
+    ldrb  r3, [r1, #3]
+    strb  r3, [r0, #3]
+    adds  r0, #4
+    adds  r1, #4
+    subs  r2, #4
+    bne   -
+    // fall through
+return:
+    pop   {r0}
+    bx    r0
+    .pool
+  .end
+
+  .begin __write //(addr, value)
+    .thumb
+    ldr   r3, =Save.swapBits
+    ldrx  r3, [r3] (Save.swapBits)
+    cmp   r3, #0
+    beq   skipSwap
+    // swap D0/D1
+    ldr   r2, =0xfffffffc
+    ands  r2, r1
+    lsls  r3, r1, #31
+    lsrs  r3, #30
+    lsls  r1, #30
+    lsrs  r1, #31
+    orrs  r1, r3
+    orrs  r1, r2
+skipSwap:
+    strh  r1, [r0]
+    bx    lr
+    .pool
+  .end
+
+  .begin __waitForValue //(readAddr, desiredValue, maxLoops) => fail?
+    .thumb
+    push  {lr}
+    .regs readAddr, desiredValue, maxLoops, t0, r4-r11
+wait:
+    ldrh  t0, [readAddr]
+    cmp   t0, desiredValue
+    beq   returnSuccess
+    subs  maxLoops, #1
+    bne   wait
+returnFail:
+    .regs r0-r11
+    movs  r0, #1
+    pop   {r1}
+    bx    r1
+returnSuccess:
+    movs  r0, #0
+    pop   {r1}
+    bx    r1
+    .pool
+  .end
+.end

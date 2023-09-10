@@ -1,0 +1,27 @@
+//
+// gvsave - Batteryless saving routines for GBA homebrew
+// by Sean Connelly (@velipso), https://sean.cm
+// Project Home: https://github.com/velipso/gvsave
+// SPDX-License-Identifier: 0BSD
+//
+
+.def SAVE_SIZE = 0x8000
+.def SAVE_ADDR = 0x02040000 - SAVE_SIZE
+
+.struct Save = 0x03000000
+  .u16 type
+  .u16 swapBits
+  .i32 resetType
+  .i32 failCode
+  // 0 = found chip
+  // 1 = identify failed
+  // 2 = unknown cart id
+  // 3 = bad cart size (expecting 4M, 8M, 16M, or 32M)
+  // 4 = can't fit save into sectors
+  .i32 cartId
+  .i32 sector1Addr
+  .i32 sector1Size
+  .i32 sector2Addr
+  .i32 sector2Size
+end:
+.end

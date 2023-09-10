@@ -1,0 +1,526 @@
+//
+// gvsave - Batteryless saving routines for GBA homebrew
+// by Sean Connelly (@velipso), https://sean.cm
+// Project Home: https://github.com/velipso/gvsave
+// SPDX-License-Identifier: 0BSD
+//
+
+.stdlib
+.import './config.gvasm' { SAVE_SIZE, Save }
+
+saveInit_autoDetectTable:
+  //   reset addr  CFI addr    identify addrs
+  .i32 0x08000000, 0x08000555, 0x08000555, 0x080002aa, 0x08000555
+  .i32 0x08000000, 0x08005555, 0x08005555, 0x08002aaa, 0x08005555
+  .i32 0x08000000, 0x080000aa, 0x08000aaa, 0x08000555, 0x08000aaa
+  .i32 0x08000000, 0x08000aaa, 0x08000aaa, 0x08000555, 0x08000aaa
+  .i32 0x08000000, 0x0800aaaa, 0x0800aaaa, 0x08005555, 0x0800aaaa
+  .i32 0x08004000, 0x08004555, 0x08004555, 0x08004aaa, 0x08004555
+  .i32 0x08007000, 0x08007555, 0x08007555, 0x08007aaa, 0x08007555
+  .i32 0x08004000, 0x08004aaa, 0x08004aaa, 0x08004555, 0x08004aaa
+  .i32 0x08007000, 0x08007aaa, 0x08007aaa, 0x08007555, 0x08007aaa
+  .i32         -1,         -1,         -1,         -1,         -1
+
+saveInit_idTable:
+  // verified ids
+  .i32 0x217e0001, 1 // S29GL064N / S29GL128N / S29GL256N
+  .i32 0x217e0020, 1 // M29W128G
+  .i32 0x217e00c2, 1 // MX29GL128E
+  .i32 0x217e00ef, 1 // W29GL128SH9B
+  .i32 0x227e0001, 1 // S29GL256N
+  .i32 0x227e0020, 1 // M29W256G
+  .i32 0x227e00c2, 1 // MX29GL256E
+  .i32 0x237e0001, 1 // S29GL512N
+  .i32 0x237e0020, 1 // M29W512G
+  .i32 0x237e00c2, 1 // MX29GL512E
+  // unverified ids from FlashGBX
+  .i32 0x217a00c2, 1
+  .i32 0x217e0004, 1
+  .i32 0x217e0089, 1
+  .i32 0x21e000ec, 1
+  .i32 0x21f90001, 1
+  .i32 0x227a00c2, 1
+  .i32 0x227e0004, 1
+  .i32 0x227e0089, 1
+  // verified ids
+  .i32 0x880d0020, 2 // M36L0R8060T
+  .i32 0x880e0020, 2 // M36L0R8060B
+  .i32 0x88100020, 2 // M58WR064FT / M36W0R6030T
+  .i32 0x88110020, 2 // M58WR064FB
+  .i32 0x88140020, 2 // M58WR032FT
+  .i32 0x88150020, 2 // M58WR032FB
+  .i32 0x881e0020, 2 // M58WR128FT / M30W0R7000T1
+  .i32 0x881f0020, 2 // M58WR128FB / M30W0R7000B1
+  .i32 0x88c40020, 2 // M58LR128HT / M36L0R7060T / M36L0R7050T
+  .i32 0x88c50020, 2 // M58LR128HB
+  // unverified ids from FlashGBX
+  .i32 0x88c60020, 2
+  .i32         -1, -1
+
+.begin saveInit //()
+  .struct S
+    .i32 ime
+    .i32 deviceSize
+    .i32 regionCount
+    .i32 sectorInfo[8] // (count, size) * 4
+  .end
+  .thumb
+  push  {r4-r7, lr}
+  .if S._bytes > 0
+    sub   sp, #S._bytes
+  .end
+
+  // disable all interrupts
+  ldr   r0, =REG_IME
+  ldrb  r1, [r0]
+  str   r1, [sp, #S.ime]
+  movs  r1, #0
+  strb  r1, [r0]
+
+  .regs r0-r3, autoAddr, rom, swap, regionIndex, r8-r11
+
+  movs  r3, #0
+nextReset:
+  cmp   r3, #3
+  blt   +
+  ldr   r0, =Save.failCode
+  movs  r1, #1
+  strx  r1, [r0] (Save.failCode)
+  b     autoFailed
++ // rom = 0x08000000
+  movs  rom, #1
+  lsls  rom, #27
+  ldr   autoAddr, =saveInit_autoDetectTable
+nextAuto:
+  // generic reset
+  ldr   r0, [autoAddr, #0]
+  ldr   r1, =-1
+  cmp   r0, r1
+  bne   +
+  adds  r3, #1
+  b     nextReset
++ push  {r0-r1}
+  movs  r1, r3
+  bl    __genericReset
+  pop   {r0-r1}
+
+  // cfi
+  ldr   r0, [autoAddr, #4]
+  movs  r1, #0x98
+  strh  r1, [r0]
+  nop
+
+  // read 0x20, 0x22, 0x24
+  ldrh  r0, [rom, #0x20]
+  nop
+  ldrh  r1, [rom, #0x22]
+  nop
+  ldrh  r2, [rom, #0x24]
+  nop
+
+  cmp   r0, #82
+  bne   +
+  cmp   r1, #81
+  bne   +
+  cmp   r2, #90
+  bne   +
+  // QRY but bit swapped
+  movs  swap, #1
+  b     foundCFI
++ cmp   r0, #81
+  bne   +
+  cmp   r1, #82
+  bne   +
+  cmp   r2, #89
+  bne   +
+  // QRY not bit swapped
+  movs  swap, #0
+  b     foundCFI
++ // didn't find QRY, so try next auto-detect params
+  adds  autoAddr, #20
+  b     nextAuto
+
+foundCFI:
+  ldr   r0, =Save.resetType
+  strx  r3, [r0] (Save.resetType)
+  ldr   r0, =Save.swapBits
+  strx  swap, [r0] (Save.swapBits)
+
+  b     skipInlineFunc
+  .pool
+
+  .begin readByte //(addr) => data
+    // cannot use r3!!!
+    ldrh  r0, [rom, r0]
+    lsls  r0, #24
+    lsrs  r0, #24
+    cmp   swap, #0
+    beq   +
+    // swap bits in r0
+    ldr   r2, =0xfffffffc
+    ands  r2, r0
+    lsls  r1, r0, #31
+    lsrs  r1, #30
+    lsls  r0, #30
+    lsrs  r0, #31
+    orrs  r0, r1
+    orrs  r0, r2
++   bx    lr
+    .pool
+  .end
+skipInlineFunc:
+  // read region count
+  movs  r0, #0x58
+  bl    readByte
+  str   r0, [sp, #S.regionCount]
+
+  // read the four regions
+  movs  regionIndex, #0
+nextRegion:
+  ldr   r0, [sp, #S.regionCount]
+  cmp   regionIndex, r0
+  blt   readRegion
+  // zero region
+  add   r0, sp, #S.sectorInfo
+  lsls  r1, regionIndex, #3
+  adds  r0, r1
+  movs  r1, #0
+  str   r1, [r0, #0] // sector count
+  str   r1, [r0, #4] // sector size
+  b     contineNextRegion
+readRegion:
+  // read sector count
+  lsls  r0, regionIndex, #3
+  adds  r0, #0x5a
+  bl    readByte
+  movs  r3, r0
+  lsls  r0, regionIndex, #3
+  adds  r0, #0x5c
+  bl    readByte
+  lsls  r0, #8
+  orrs  r0, r3
+  adds  r0, #1 // sector count +1
+  add   r1, sp, #S.sectorInfo
+  lsls  r2, regionIndex, #3
+  adds  r1, r2
+  str   r0, [r1, #0] // save sector count
+
+  // read sector size
+  lsls  r0, regionIndex, #3
+  adds  r0, #0x5e
+  bl    readByte
+  movs  r3, r0
+  lsls  r0, regionIndex, #3
+  adds  r0, #0x60
+  bl    readByte
+  lsls  r0, #8
+  orrs  r0, r3
+  lsls  r0, #8 // sector size * 256
+  add   r1, sp, #S.sectorInfo
+  lsls  r2, regionIndex, #3
+  adds  r1, r2
+  str   r0, [r1, #4] // save sector size
+
+contineNextRegion:
+  adds  regionIndex, #1
+  cmp   regionIndex, #4
+  blt   nextRegion
+
+  // done gathering region info
+
+  // generic reset
+  push  {r0-r1}
+  ldr   r0, [autoAddr, #0]
+  ldr   r1, =Save.resetType
+  ldrx  r1, [r1] (Save.resetType)
+  bl    __genericReset
+  pop   {r0-r1}
+
+  // send identify to cart (taking swap into account)
+  cmp   swap, #0
+  beq   ++
+  // swap
+  ldr   r0, [autoAddr, #8]
+  movs  r1, #0xa9
+  strh  r1, [r0]
+  nop
+  ldr   r0, [autoAddr, #12]
+  movs  r1, #0x56
+  strh  r1, [r0]
+  nop
+  b     +
+++
+  ldr   r0, [autoAddr, #8]
+  movs  r1, #0xaa
+  strh  r1, [r0]
+  nop
+  ldr   r0, [autoAddr, #12]
+  movs  r1, #0x55
+  strh  r1, [r0]
+  nop
++
+  ldr   r0, [autoAddr, #16]
+  movs  r1, #0x90
+  strh  r1, [r0]
+  nop
+
+  // read cart id
+  ldr   r0, [rom]
+  cmp   swap, #0
+  beq   ++
+  // swap each byte of r0
+  ldr   r1, =0x01010101
+  ands  r1, r0
+  lsls  r1, #1
+  ldr   r2, =0x02020202
+  ands  r2, r0
+  lsrs  r2, #1
+  ldr   r3, =0xfcfcfcfc
+  ands  r0, r3
+  orrs  r0, r1
+  orrs  r0, r2
+++
+  ldr   r1, =Save.cartId
+  str   r0, [r1]
+
+  // generic reset
+  push  {r0-r1}
+  ldr   r0, [autoAddr, #0]
+  ldr   r1, =Save.resetType
+  ldrx  r1, [r1] (Save.resetType)
+  bl    __genericReset
+  pop   {r0-r1}
+
+  .regs idAddr, cartId, t0-t5, r8-r11
+
+  // search for known ids
+  ldr   cartId, =Save.cartId
+  ldr   cartId, [cartId]
+  ldr   idAddr, =saveInit_idTable
+  ldr   t1, =-1
+nextIdTable:
+  ldr   t0, [idAddr, #0]
+  cmp   t0, t1
+  bne   +
+  // failed to find the id :-(
+  ldr   t0, =Save.failCode
+  movs  t1, #2
+  strx  t1, [t0] (Save.failCode)
+  b     autoFailedKeepId
++ cmp   t0, cartId
+  beq   foundId
+  adds  idAddr, #8
+  b     nextIdTable
+
+foundId:
+  // save cart type
+  ldr   t0, [idAddr, #4]
+  ldr   t1, =Save.type
+  strx  t0, [t1] (Save.type)
+
+  .regs deviceSize, t0-t6, r8-r11
+
+  // the cart has been identified, all region information has been
+  // read, now we just need to calculate the sector addr/sizes!
+
+  // first, verify that sector info looks reasonable
+  // calculate device size by totaling up regions
+  movs  deviceSize, #0
+  ldr   t0, [sp, #S.sectorInfo + 0] // sector 1 count
+  ldr   t1, [sp, #S.sectorInfo + 4] // sector 1 size
+  muls  t0, t1
+  adds  deviceSize, t0
+  ldr   t0, [sp, #S.sectorInfo + 8] // ...
+  ldr   t1, [sp, #S.sectorInfo + 12]
+  muls  t0, t1
+  adds  deviceSize, t0
+  ldr   t0, [sp, #S.sectorInfo + 16]
+  ldr   t1, [sp, #S.sectorInfo + 20]
+  muls  t0, t1
+  adds  deviceSize, t0
+  ldr   t0, [sp, #S.sectorInfo + 24]
+  ldr   t1, [sp, #S.sectorInfo + 28]
+  muls  t0, t1
+  adds  deviceSize, t0
+
+  // accept 4M, 8M, 16M, and 32M carts
+  movs  t0, #1
+  lsls  t0, #22 // 4M
+  cmp   deviceSize, t0
+  beq   +
+  lsls  t0, #1 // 8M
+  cmp   deviceSize, t0
+  beq   +
+  lsls  t0, #1 // 16M
+  cmp   deviceSize, t0
+  beq   +
+  lsls  t0, #1 // 32M
+  cmp   deviceSize, t0
+  beq   +
+  // sector information is probably wrong :-(
+  ldr   t0, =Save.failCode
+  movs  t1, #3
+  strx  t1, [t0] (Save.failCode)
+  b     autoFailedKeepId
++
+  // sector information looks right, so find our flash locations
+
+  // zero our addrs
+  movs  t0, #0
+  ldr   t1, =Save.sector1Addr
+  str   t0, [t1]
+  ldr   t1, =Save.sector2Addr
+  str   t0, [t1]
+
+  .regs deviceTail, regionIndex, sectorCount, sectorSize, saveSize, t0-t2, r8-r11
+
+  // deviceTail += 0x08000000
+  movs  t0, #1
+  lsls  t0, #27
+  adds  deviceTail, t0
+
+  ldr   saveSize, =SAVE_SIZE
+  movs  regionIndex, #3
+prevRegion:
+  // load sectorCount/Size for this region
+  add   sectorCount, sp, #S.sectorInfo
+  lsls  t0, regionIndex, #3
+  adds  sectorCount, t0
+  adds  sectorSize, sectorCount, #4
+  ldr   sectorSize, [sectorSize]
+  ldr   sectorCount, [sectorCount]
+
+grabMoreSectors:
+  // can we fit a save in this region?
+  movs  t0, sectorSize
+  muls  t0, sectorCount
+  cmp   t0, saveSize
+  bge   fitsHere
+
+  // can't fit here, so update deviceTail and try next region
+  subs  deviceTail, t0
+  b     continuePrevRegion
+
+fitsHere:
+  // figure out how many sectors we'll need to fit a save
+  movs  t0, #0 // consumed space
+  movs  t1, #0 // consumed sector count
+consumeAnotherSector:
+  adds  t1, #1
+  adds  t0, sectorSize
+  cmp   t0, saveSize
+  blt   consumeAnotherSector
+
+  // consume the sectors
+  subs  sectorCount, t1
+  subs  deviceTail, t0
+
+  // t2 = min(saveSize, sectorSize)
+  movs  t2, saveSize
+  cmp   t2, sectorSize
+  blt   +
+  movs  t2, sectorSize
++
+  // check which sectorX to save to
+  ldr   t0, =Save.sector1Addr
+  ldr   t1, [t0]
+  cmp   t1, #0
+  beq   saveSector1
+  // save sector 2
+  ldr   t0, =Save.sector2Addr
+  str   deviceTail, [t0]
+  ldr   t0, =Save.sector2Size
+  str   t2, [t0]
+  // clear fail code
+  ldr   t0, =Save.failCode
+  movs  t1, #0
+  strx  t1, [t0] (Save.failCode)
+  b     return
+saveSector1:
+  str   deviceTail, [t0]
+  ldr   t0, =Save.sector1Size
+  str   t2, [t0]
+  b     grabMoreSectors
+
+continuePrevRegion:
+  cmp   regionIndex, #0
+  beq   +
+  subs  regionIndex, #1
+  b     prevRegion
++
+  // out of regions (should be impossible?)
+  ldr   t0, =Save.failCode
+  movs  t1, #4
+  strx  t1, [t0] (Save.failCode)
+  b     autoFailedKeepId
+
+autoFailed:
+  .regs r0-r11
+  // clear everything, marking type as SRAM
+  movs  r0, #0
+  ldr   r1, =Save.cartId
+  strx  r0, [r1] (Save.cartId)
+  ldr   r1, =Save.resetType
+  strx  r0, [r1] (Save.resetType)
+autoFailedKeepId:
+  movs  r0, #0
+  ldr   r1, =Save.type
+  strx  r0, [r1] (Save.type)
+  ldr   r1, =Save.swapBits
+  strx  r0, [r1] (Save.swapBits)
+  ldr   r1, =Save.sector1Addr
+  strx  r0, [r1] (Save.sector1Addr)
+  ldr   r1, =Save.sector1Size
+  strx  r0, [r1] (Save.sector1Size)
+  ldr   r1, =Save.sector2Addr
+  strx  r0, [r1] (Save.sector2Addr)
+  ldr   r1, =Save.sector2Size
+  strx  r0, [r1] (Save.sector2Size)
+  // fall through
+return:
+  // restore IME
+  ldr   r0, =REG_IME
+  ldr   r1, [sp, #S.ime]
+  strb  r1, [r0]
+
+  .if S._bytes > 0
+    add   sp, #S._bytes
+  .end
+  pop   {r4-r7}
+  pop   {r0}
+  bx    r0
+  .pool
+.end
+
+.begin __genericReset //(resetAddr, kind)
+  .thumb
+  cmp   r1, #0
+  beq   reset0
+  cmp   r1, #1
+  beq   reset1
+  b     reset2
+
+reset0:
+  movs  r1, #0xf0
+  strh  r1, [r0]
+  nop
+  movs  r1, #0xff
+  strh  r1, [r0]
+  nop
+  bx    lr
+
+reset1:
+  movs  r1, #0xf0
+  strh  r1, [r0]
+  nop
+  bx    lr
+
+reset2:
+  movs  r1, #0x50
+  strh  r1, [r0]
+  nop
+  movs  r1, #0xff
+  strh  r1, [r0]
+  nop
+  bx    lr
+.end
