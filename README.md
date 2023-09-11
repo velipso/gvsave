@@ -83,7 +83,7 @@ beginning of IWRAM (`0x03000000`):
 .end
 ```
 
-Also notice you can see the meaning behind `failCode` in this file.
+Also notice you can see the meaning behind `Save.failCode` in this file.
 
 ### Copying code to IWRAM
 
