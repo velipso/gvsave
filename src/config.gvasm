@@ -13,11 +13,15 @@
   .u16 swapBits
   .i32 resetType
   .i32 failCode
-  // 0 = found chip
-  // 1 = identify failed
-  // 2 = unknown cart id
-  // 3 = bad cart size (expecting 4M, 8M, 16M, or 32M)
-  // 4 = can't fit save into sectors
+  // 0x00 = found chip
+  // 0x01 = identify failed
+  // 0x02 = unknown cart id
+  // 0x03 = bad cart size (expecting 4M, 8M, 16M, or 32M)
+  // 0x04 = can't fit save into sectors
+  // 0x11 = S29 erase sector timeout
+  // 0x12 = S29 write halfword timeout
+  // 0x21 = M58 erase sector timeout
+  // 0x22 = M58 write halfword timeout
   .i32 cartId
   .i32 sector1Addr
   .i32 sector1Size

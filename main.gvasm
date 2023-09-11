@@ -269,12 +269,6 @@ iwramEnd:
     movs  r3, #0
     bl    printInt8
     movs  r0, #STR_X2
-    movs  r1, #STR_Y + 2
-    ldr   r2, =Save.failCode
-    ldrx  r2, [r2] (Save.failCode)
-    movs  r3, #0
-    bl    printInt8
-    movs  r0, #STR_X2
     movs  r1, #STR_Y + 4
     ldr   r2, =Save.cartId
     ldrx  r2, [r2] (Save.cartId)
@@ -367,6 +361,8 @@ iwramEnd:
     beq   statusVerified
     cmp   r2, #3
     beq   statusBadSave
+    cmp   r2, #4
+    beq   statusSaveFail
 statusEmpty:
     ldr   r2, =emptyStr
     b     +
@@ -378,6 +374,9 @@ statusVerified:
     b     +
 statusBadSave:
     ldr   r2, =badSaveStr
+    b     +
+statusSaveFail:
+    ldr   r2, =saveFailStr
 +   movs  r3, #0
     bl    printString
 
@@ -388,6 +387,14 @@ statusBadSave:
     ldrx  r2, [r2] (G.checksum)
     movs  r3, #0
     bl    printInt32
+
+    // render fail code
+    movs  r0, #STR_X2
+    movs  r1, #STR_Y + 2
+    ldr   r2, =Save.failCode
+    ldrx  r2, [r2] (Save.failCode)
+    movs  r3, #0
+    bl    printInt8
 
     // handle input
     ldr   r0, =G.hit
@@ -486,10 +493,14 @@ break:
   bl    bx_r0
 
   // update status text
-  ldr   r0, =G.status
   movs  r1, #1
+  cmp   r0, #0
+  beq   +
+  movs  r1, #4
++ ldr   r0, =G.status
   strx  r1, [r0] (G.status)
 
+return:
   .regs r0-r11
   pop   {r4-r7}
   pop   {r0}
@@ -714,6 +725,8 @@ verifiedStr:
 .str "Verified!\0"
 badSaveStr:
 .str "Bad save \0"
+saveFailStr:
+.str "Save fail\0"
 githubStr:
 .str "github.com/velipso/gvsave\0"
 

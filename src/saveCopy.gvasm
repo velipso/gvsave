@@ -194,7 +194,7 @@ nextSector:
       bl    __waitForValue
       cmp   r0, #0
       beq   +
-      b     returnFail1
+      b     returnFail11
 +
       // reset
       movs  r0, sectorAddr
@@ -225,7 +225,7 @@ nextHalfword_s29:
       bl    __waitForValue
       cmp   r0, #0
       beq   +
-      b     returnFail2
+      b     returnFail12
 +
       adds  i, #2
       cmp   i, sectorSize
@@ -273,7 +273,7 @@ nextHalfword_s29:
       bl    __waitForValue
       cmp   r0, #0
       beq   +
-      b     returnFail3
+      b     returnFail21
 +
       // reset
       movs  r0, sectorAddr
@@ -299,7 +299,7 @@ nextHalfword_m58:
       bl    __waitForValue
       cmp   r0, #0
       beq   +
-      b     returnFail4
+      b     returnFail22
 +
       adds  i, #2
       cmp   i, sectorSize
@@ -326,17 +326,17 @@ continue:
 +   movs  r0, #0
     b     return
 
-returnFail1:
-    movs  r0, #1
+returnFail11:
+    movs  r0, #0x11
     b     returnFailX
-returnFail2:
-    movs  r0, #2
+returnFail12:
+    movs  r0, #0x12
     b     returnFailX
-returnFail3:
-    movs  r0, #3
+returnFail21:
+    movs  r0, #0x21
     b     returnFailX
-returnFail4:
-    movs  r0, #4
+returnFail22:
+    movs  r0, #0x22
     b     returnFailX
 returnFailX:
     ldr   r1, =Save.failCode
