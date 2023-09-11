@@ -9,8 +9,8 @@
 .def SAVE_ADDR = 0x02040000 - SAVE_SIZE
 
 .struct Save = 0x03000000
-  .u16 type
-  .u16 swapBits
+  .u16 type       // 0 = SRAM, 1 = S29, 2 = M58
+  .u16 swapBits   // 0 = false, 1 = swap D0/D1 on read
   .i32 resetType
   .i32 failCode
   // 0x00 = found chip

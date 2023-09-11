@@ -41,7 +41,7 @@ gvasm make main.gvasm
 
 Or you can download the ROM directly, here:
 
-[Demo](./main.gba)
+[Demo](https://github.com/velipso/gvsave/raw/main/main.gba)
 
 How to Use
 ----------
