@@ -83,6 +83,8 @@ beginning of IWRAM (`0x03000000`):
 .end
 ```
 
+Also notice you can see the meaning behind `failCode` in this file.
+
 ### Copying code to IWRAM
 
 The two files `src/saveInit.gvasm` and `src/saveCopy.gvasm` should be executed from IWRAM.
@@ -146,5 +148,5 @@ prior to calling this function.
 
 This can take a couple seconds to finish depending on the cart and size of the save.
 
-It will return a status in `r0`, where `0` is success, and some other code is a failure. This
+It will return a status in `r0`, where 0 is success, and some other code is a failure. This
 failure code will also be stored in `Save.failCode`.
