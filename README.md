@@ -115,6 +115,12 @@ bl    bx_r0
 
 Note, you need to add `+1` because the routine is written in Thumb.
 
+This will write to `Save.failCode`, but since it will fallback to SRAM, there isn't really a
+failure state.
+
+You can detect which type of save was detected via `Save.type`, where 0 is SRAM, and non-zero is
+a flash cart.
+
 ### Loading saved data
 
 In order to load data from storage to RAM, call:
@@ -139,3 +145,6 @@ Note that this will disable interrupts, so you will want to fade out music, paus
 prior to calling this function.
 
 This can take a couple seconds to finish depending on the cart and size of the save.
+
+It will return a status in `r0`, where `0` is success, and some other code is a failure. This
+failure code will also be stored in `Save.failCode`.
